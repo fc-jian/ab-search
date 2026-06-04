@@ -157,14 +157,3 @@ python score_structures.py \
   --errors-output results/test_input/structure_score_errors.tsv \
   --scheme chothia
 ```
-
-## 7. Repository Hygiene
-
-Downloaded/generated data are intentionally ignored by git:
-
-- `reference/`
-- `results/`
-- `guide.md`
-
-Keep small source files, documentation, and test inputs in git. Rebuild reference
-data locally from the commands above.
