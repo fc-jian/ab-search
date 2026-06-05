@@ -51,6 +51,15 @@ python run_pipeline.py \
   --threads 4
 ```
 
+Run the multi-record test:
+
+```bash
+python run_pipeline.py \
+  --query test_multi_input.fasta \
+  --outdir results/test_multi_input \
+  --threads 4
+```
+
 Important outputs:
 
 - `results/test_input/blastp_hits.tsv`: BLAST hits.
@@ -60,6 +69,13 @@ Important outputs:
   including `support_pdb_ids` separated by `|` and `epitope_identity_range`.
 - `results/test_input/structure_score_errors.tsv`: per-hit scoring failures.
 - `results/test_input/logs/`: command logs.
+
+For multi-record FASTA input, `run_pipeline.py` runs records sequentially and
+creates one subdirectory per FASTA record ID. The output root also contains:
+
+- `query_manifest.tsv`: record-to-subdirectory mapping.
+- `merged_antibodies.csv`: antibody groups recomputed across every record's
+  `structure_scores.csv`.
 
 ## Manual Pipeline
 
@@ -147,6 +163,9 @@ python score_structures.py \
 ## Editing Guidelines
 
 - Keep scripts standalone and runnable from the repository root.
+- Preserve single-record output behavior. For multi-record FASTA input, keep each
+  record's full pipeline output isolated in its own sanitized record-name subdirectory
+  and regenerate the root-level merged antibody summary from all record score tables.
 - Prefer cached reference data and structure files; do not redownload files that
   already exist and are non-empty.
 - Keep output tables stable and append extra columns only after the documented

@@ -93,6 +93,29 @@ python run_pipeline.py \
   --threads 4
 ```
 
+Multi-record FASTA files are processed sequentially:
+
+```bash
+python run_pipeline.py \
+  --query test_multi_input.fasta \
+  --outdir results/test_multi_input \
+  --threads 4
+```
+
+For multi-record input, each FASTA record ID gets its own output subdirectory:
+
+```text
+results/test_multi_input/
+|-- M1R/
+|-- M1R_copy/
+|-- merged_antibodies.csv
+`-- query_manifest.tsv
+```
+
+Record IDs are preserved as query IDs. Characters unsuitable for directory names
+are replaced with `_`; the runner stops if two record IDs would map to the same
+directory name.
+
 The runner reuses existing reference files, BLAST DB files, and cached mmCIF
 structures when they are already present.
 
@@ -108,6 +131,14 @@ For the example command, outputs are written under `results/test_input/`:
   per-structure identity range for that antibody group.
 - `structure_score_errors.tsv`: per-hit scoring failures, if any.
 - `logs/`: command logs.
+
+For multi-record input:
+
+- `<record_id>/`: the complete normal output set for one FASTA record.
+- `query_manifest.tsv`: maps input record IDs to generated subdirectories and files.
+- Top-level `merged_antibodies.csv`: exact antibody sequence groups recomputed from
+  all records. Its `query_id_list`, `support_pdb_ids`, support count, and
+  `epitope_identity_range` summarize the complete multi-query run.
 
 ## 5. Scoring Notes
 
