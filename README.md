@@ -140,6 +140,14 @@ For multi-record input:
   all records. Its `query_id_list`, `support_pdb_ids`, support count, and
   `epitope_identity_range` summarize the complete multi-query run.
 
+Antibody chain descriptions:
+
+- `structure_scores.csv` includes `heavy_chain_description` and
+  `light_chain_description`, read from the corresponding PDB SEQRES FASTA header.
+- `merged_antibodies.csv` includes `heavy_chain_description_list` and
+  `light_chain_description_list`, merged with the same unique `|`-separated logic
+  used for `antigen_name_list`.
+
 ## 5. Scoring Notes
 
 `structure_scores.csv` reports epitope identity using antibody CDR-contacting
@@ -188,3 +196,30 @@ python score_structures.py \
   --errors-output results/test_input/structure_score_errors.tsv \
   --scheme chothia
 ```
+
+## 7. Find Chain Names
+
+Use `find_chain_name.py` to annotate plain one-sequence-per-line protein input
+against any BLAST protein database:
+
+```bash
+python find_chain_name.py \
+  --input sequences.txt \
+  --blastdb reference/blastdb \
+  --output chain_names.csv \
+  --min-identity 0.7 \
+  --threads 4
+```
+
+If `blastp` is not on `PATH`, pass it explicitly:
+
+```bash
+python find_chain_name.py \
+  --input sequences.txt \
+  --blastdb reference/blastdb \
+  --output chain_names.csv \
+  --blastp /home/jianfc/miniforge3/envs/bioinfo/bin/blastp
+```
+
+The output CSV contains one row per input line, including the best matching
+subject ID, FASTA description, identity, query coverage, e-value, and bitscore.

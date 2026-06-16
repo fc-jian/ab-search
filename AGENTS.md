@@ -77,6 +77,12 @@ creates one subdirectory per FASTA record ID. The output root also contains:
 - `merged_antibodies.csv`: antibody groups recomputed across every record's
   `structure_scores.csv`.
 
+`structure_scores.csv` includes `heavy_chain_description` and
+`light_chain_description` from the corresponding PDB SEQRES FASTA headers.
+`merged_antibodies.csv` includes `heavy_chain_description_list` and
+`light_chain_description_list`, merged with the same unique `|`-separated logic
+as `antigen_name_list`.
+
 ## Manual Pipeline
 
 Prepare antigen-chain FASTA:
@@ -132,6 +138,17 @@ python score_structures.py \
   --scheme chothia
 ```
 
+Find best BLAST database chain descriptions for plain one-sequence-per-line input:
+
+```bash
+python find_chain_name.py \
+  --input sequences.txt \
+  --blastdb reference/blastdb \
+  --output chain_names.csv \
+  --min-identity 0.7 \
+  --threads 4
+```
+
 ## Script Notes
 
 - `filter_seqs.py` defaults to `--scope antigen`, which keeps only protein antigen
@@ -140,6 +157,10 @@ python score_structures.py \
   PDB entries.
 - `download_pdb.py` accepts `--min-identity 0.7` as 70 percent identity. Values
   above `1.0` are treated as already being percentages.
+- `find_chain_name.py` accepts a TXT file with one protein sequence per line,
+  runs `blastp` against a supplied protein BLAST database, and writes the best
+  hit FASTA description per sequence to CSV. Use `--blastp /path/to/blastp` when
+  the executable is not on `PATH`.
 - `score_structures.py` uses Biotite with `model=1`, author chain/residue IDs,
   highest-occupancy alternate locations, CA distance threshold `8.0`, and minimum
   heavy-atom distance threshold `4.5`. It reads the first biological assembly via
@@ -168,8 +189,9 @@ python score_structures.py \
   and regenerate the root-level merged antibody summary from all record score tables.
 - Prefer cached reference data and structure files; do not redownload files that
   already exist and are non-empty.
-- Keep output tables stable and append extra columns only after the documented
-  core columns.
+- Keep output tables stable; when adding chain metadata columns, preserve the
+  structure/merged table naming convention used by the description columns.
 - Preserve chain IDs exactly as provided by SAbDab and PDB/mmCIF author fields.
 - When changing structure scoring, test with `./test_input.fasta` and inspect
-  `./results/test_input/structure_scores.csv`.
+  `./results/test_input/structure_scores.csv`. When changing multi-query or
+  merged-summary behavior, test with `./combined_test_query.fasta`.

@@ -113,6 +113,12 @@ class StructureVariant:
     warning: str
 
 
+@dataclass(frozen=True)
+class SeqresRecord:
+    sequence: str
+    description: str
+
+
 def clean_cell(value: object) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -190,6 +196,11 @@ def parse_seqres_header(header: str) -> tuple[str, str]:
     return pdb_id.lower(), chain_id
 
 
+def parse_seqres_description(header: str) -> str:
+    parts = header.split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
 def iter_fasta(path: Path) -> Iterable[tuple[str, str]]:
     header: str | None = None
     chunks: list[str] = []
@@ -211,23 +222,26 @@ def iter_fasta(path: Path) -> Iterable[tuple[str, str]]:
         yield header, "".join(chunks)
 
 
-def load_seqres_sequences(
+def load_seqres_records(
     path: Path | None,
     keys: set[tuple[str, str]],
-) -> dict[tuple[str, str], str]:
+) -> dict[tuple[str, str], SeqresRecord]:
     if path is None or not path.exists() or not keys:
         return {}
 
-    sequences: dict[tuple[str, str], str] = {}
+    records: dict[tuple[str, str], SeqresRecord] = {}
     remaining = set(keys)
     for header, sequence in iter_fasta(path):
         key = parse_seqres_header(header)
         if key in remaining:
-            sequences[key] = sequence.upper().replace("*", "")
+            records[key] = SeqresRecord(
+                sequence=sequence.upper().replace("*", ""),
+                description=parse_seqres_description(header),
+            )
             remaining.remove(key)
             if not remaining:
                 break
-    return sequences
+    return records
 
 
 def read_blast_hits(path: Path) -> pd.DataFrame:
@@ -419,15 +433,16 @@ def cdr_residue_indices_for_chain(
     pdb_id: str,
     chain_id: str,
     scheme: str,
-    seqres_sequences: dict[tuple[str, str], str],
+    seqres_records: dict[tuple[str, str], SeqresRecord],
     aligner: PairwiseAligner,
 ) -> tuple[set[int], str]:
     observed_sequence = chain_sequence(atoms, chain_id)
     if not observed_sequence:
         return set(), f"{chain_id}: chain sequence not found"
 
-    reference_sequence = seqres_sequences.get((pdb_id, chain_id))
-    if reference_sequence:
+    reference_record = seqres_records.get((pdb_id, chain_id))
+    if reference_record:
+        reference_sequence = reference_record.sequence
         domains, error = run_anarci_with_scfv_retry(
             f"{pdb_id}_{chain_id}_seqres",
             reference_sequence,
@@ -462,7 +477,7 @@ def cdr_atoms_for_antibody_chains(
     pdb_id: str,
     antibody_chains: list[str],
     scheme: str,
-    seqres_sequences: dict[tuple[str, str], str],
+    seqres_records: dict[tuple[str, str], SeqresRecord],
     aligner: PairwiseAligner,
 ) -> tuple[Any | None, list[str], list[str]]:
     residue_arrays: list[Any] = []
@@ -475,7 +490,7 @@ def cdr_atoms_for_antibody_chains(
             pdb_id,
             chain_id,
             scheme,
-            seqres_sequences,
+            seqres_records,
             aligner,
         )
         if warning:
@@ -576,7 +591,7 @@ def identify_epitope_residues(
     antibody_chains: list[str],
     excluded_chains: list[str],
     scheme: str,
-    seqres_sequences: dict[tuple[str, str], str],
+    seqres_records: dict[tuple[str, str], SeqresRecord],
     ca_distance_threshold: float,
     atom_distance_threshold: float,
     homodimer_identity_threshold: float,
@@ -596,7 +611,7 @@ def identify_epitope_residues(
         pdb_id,
         antibody_chains,
         scheme,
-        seqres_sequences,
+        seqres_records,
         aligner,
     )
     if cdr_atoms is None or cdr_atoms.array_length() == 0:
@@ -862,7 +877,7 @@ def annotate_antibodies(
     row: pd.Series,
     scheme: str,
     annotation_cache: dict[tuple[str, str], tuple[str, list[AnarciDomain], str]],
-    seqres_sequences: dict[tuple[str, str], str],
+    seqres_records: dict[tuple[str, str], SeqresRecord],
 ) -> dict[str, str]:
     scfv = is_true(row.get("scfv"))
     heavy_ids = split_chains(row.get("Hchain"))
@@ -874,13 +889,24 @@ def annotate_antibodies(
     for chain_id in all_ids:
         cache_key = (pdb_id, chain_id)
         if cache_key not in annotation_cache:
-            sequence = seqres_sequences.get(cache_key) or chain_sequence(atoms, chain_id)
+            seqres_record = seqres_records.get(cache_key)
+            sequence = seqres_record.sequence if seqres_record else chain_sequence(atoms, chain_id)
             domains, error = run_anarci_with_scfv_retry(f"{pdb_id}_{chain_id}", sequence, scheme)
             annotation_cache[cache_key] = (sequence, domains, error)
         chain_data[chain_id] = annotation_cache[cache_key]
 
     heavy_sequences = [chain_data[chain_id][0] for chain_id in heavy_ids if chain_id in chain_data]
     light_sequences = [chain_data[chain_id][0] for chain_id in light_ids if chain_id in chain_data]
+    heavy_descriptions = [
+        seqres_records[(pdb_id, chain_id)].description
+        for chain_id in heavy_ids
+        if (pdb_id, chain_id) in seqres_records
+    ]
+    light_descriptions = [
+        seqres_records[(pdb_id, chain_id)].description
+        for chain_id in light_ids
+        if (pdb_id, chain_id) in seqres_records
+    ]
 
     heavy_domains = [
         domain
@@ -920,6 +946,8 @@ def annotate_antibodies(
     return {
         "heavy_chain_id": ";".join(heavy_ids),
         "light_chain_id": "" if scfv else ";".join(light_ids),
+        "heavy_chain_description": ";".join(heavy_descriptions),
+        "light_chain_description": "" if scfv else ";".join(light_descriptions),
         "seq_heavy_full": ";".join(heavy_sequences),
         "seq_light_full": "" if scfv else ";".join(light_sequences),
         "seq_heavy_anarci": heavy_domain.sequence if heavy_domain else "",
@@ -1022,6 +1050,8 @@ def base_output_columns() -> list[str]:
         "antigen_id",
         "heavy_chain_id",
         "light_chain_id",
+        "heavy_chain_description",
+        "light_chain_description",
         "number_epitope_residues",
         "number_target_epitope_residues",
         "number_multichain_epitope_residues",
@@ -1069,6 +1099,8 @@ def merged_antibody_columns() -> list[str]:
         "query_id_list",
         "heavy_chain_id_list",
         "light_chain_id_list",
+        "heavy_chain_description_list",
+        "light_chain_description_list",
         "seq_heavy_full",
         "seq_light_full",
         "seq_heavy_anarci",
@@ -1138,6 +1170,8 @@ def make_merged_antibody_table(output: pd.DataFrame) -> pd.DataFrame:
                 "query_id_list": join_unique(group["query_id"]),
                 "heavy_chain_id_list": join_unique(group["heavy_chain_id"]),
                 "light_chain_id_list": join_unique(group["light_chain_id"]),
+                "heavy_chain_description_list": join_unique(group.get("heavy_chain_description", [])),
+                "light_chain_description_list": join_unique(group.get("light_chain_description", [])),
                 "seq_heavy_full": clean_cell(first.get("seq_heavy_full")),
                 "seq_light_full": clean_cell(first.get("seq_light_full")),
                 "seq_heavy_anarci": clean_cell(first.get("seq_heavy_anarci")),
@@ -1213,7 +1247,7 @@ def main() -> None:
         for sabdab_row in matching_sabdab_rows(summary, pdb_id, antigen_chain):
             for chain_id in split_chains(sabdab_row.get("Hchain")) + split_chains(sabdab_row.get("Lchain")):
                 seqres_keys.add((pdb_id, chain_id))
-    seqres_sequences = load_seqres_sequences(args.pdb_seqres, seqres_keys)
+    seqres_records = load_seqres_records(args.pdb_seqres, seqres_keys)
 
     aligner = make_pairwise_aligner()
     structure_cache: dict[str, list[StructureVariant]] = {}
@@ -1303,7 +1337,7 @@ def main() -> None:
                         contact_ids,
                         excluded_chain_ids,
                         args.scheme,
-                        seqres_sequences,
+                        seqres_records,
                         args.ca_distance_threshold,
                         args.atom_distance_threshold,
                         args.homodimer_identity_threshold,
@@ -1337,7 +1371,7 @@ def main() -> None:
                 sabdab_row,
                 args.scheme,
                 annotation_cache,
-                seqres_sequences,
+                seqres_records,
             )
             epitope_scores = score_epitope(
                 queries[query_id],
