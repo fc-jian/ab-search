@@ -23,6 +23,69 @@ Running without `--sources` searches all prepared indexes. Use
 The main output is `binding_candidates.csv`. A multi-query file produces a
 combined candidate table with a separate row per query and antibody sequence pair.
 
+## Optional protein and peptide partners
+
+Add `--protein-partners` to an antibody search to also find published protein
+and peptide binders of reviewed human proteins. Use `--sources partners` for
+a standalone partner search. The input can be a full protein, mature peptide
+or fragment. The query sequence is matched locally to the reviewed human
+UniProt proteome including isoforms. Public services receive accessions and
+PDB IDs. The structural backend uses Biotite and SciPy.
+
+```bash
+python run_pipeline.py --query examples/protein_partners.fasta --protein-partners --outdir results/combined
+python run_pipeline.py --sources partners --query examples/protein_partners.fasta --outdir results/partners
+python run_pipeline.py --sources partners --query examples/protein_partners.fasta --partner-pdb 2b0u 3w11 4asd --outdir results/partner_controls
+```
+
+| Source name for `--partner-sources` | Data used |
+| --- | --- |
+| `pdbe` | PDBe's best-structures API discovers entries across the experimental PDB. SIFTS in the updated mmCIF maps the deposited polypeptide residues in each biological assembly to UniProt. [PDBe API](https://www.ebi.ac.uk/pdbe/pdbe-rest-api) · [SIFTS mappings](https://www.ebi.ac.uk/pdbe/docs/sifts/quick.html) |
+| `cellphonedb` | Version 5.0.0 protein–protein interaction records, searched in both directions with receptor/ligand roles and complex subunits. [Public release](https://github.com/ventolab/cellphonedb-data/tree/v5.0.0/data) |
+| `gtopdb` | Endogenous pairings and human peptide interactions joined to the matching peptide release. Records can provide mature chain sequences, modifications, assay descriptions, original units and references. Set the environment variable `GTP_API_KEY` for authenticated downloads, or supply the three official matching CSVs in the cache's `gtopdb/` directory. [Downloads](https://www.guidetopharmacology.org/download.jsp) · [Programmatic access](https://blog.guidetopharmacology.org/2026/11/20/gtopdb-download-changes-coming-soon/) |
+| `intact` | Paginated PSICQUIC MITAB 2.7 records for human participants. Rows retain the experiment, participant features, negative flag decision, and publication. Associations and expanded complexes remain identifiable. [IntAct](https://www.ebi.ac.uk/intact/) |
+| `synbip` | Published target–binder records and original sequences for human targets and supported non-Ig scaffolds including monobodies, DARPins, affibodies and anticalins. Raw affinity and the source record accompany each hit. [SYNBIP downloads](https://synbip.idrblab.net/full-data-download) |
+
+The default partner search uses all five sources. The source snapshots live
+under `reference/partners/`. Use `--partner-cache DIR` for a separate snapshot
+and `--partner-offline` to reproduce a run from that snapshot. Use
+`--partner-human-fasta FILE` for a local reviewed human UniProt FASTA.
+`--partner-pdb` restricts the discovered structures by ID. An optional
+`--partner-max-structures N` limits the number per query, prioritizing
+structures that span the input region. The run metadata records the number
+discovered, selected IDs, source outcomes, URLs and file hashes. A source
+failure is visible in the evidence and metadata. An all-source failure for a
+resolved query returns a nonzero exit code after writing the audit.
+
+| Partner output | Contents |
+| --- | --- |
+| `partner_summary.csv` | One row per query and partner ID including all sources and the number of distinct forms supported for the input. Start here to see both established parent-protein relationships and fragment-supported hits. |
+| `partner_candidates.csv` | Structure-supported forms with deposited partner chain sequences, stoichiometry, supporting structures and contact coverage. |
+| `partner_evidence.csv` | Source-level records, assembly chains, query-relative contact positions, construct context, assay fields and decisions. Reported point values for Kd, Ki and IC50 have separate nM columns with their original qualifier and raw affinity. Sequence basis identifies reference precursors and reported partner chains. |
+
+Multi-record runs produce these tables per query and at the output root.
+GtoPdb, CellPhoneDB, IntAct and SYNBIP can establish a reported relationship
+even when its assayed construct is unspecified. Such records receive
+`parent_only`. A structure requires actual heavy-atom contact (default 4.5 Å)
+with a human polypeptide in a biological assembly. An exact deposited
+construct can qualify directly. For transfer, every observed target contact
+must map uniquely into the query and satisfy the site's substitution and
+identity limits (default zero substitutions). Extra target segments, a
+multi-protein interface or a modified target contact are recorded as context.
+The peptide label in structural output means that each partner chain is at
+most 50 residues. Chemical components and nucleic acids are excluded from
+the partner search. Evidence grades describe published experiments and structures.
+
+The three-structure command above exercises these controls. The FST query
+matches the 288-residue follistatin chains bound to the activin A dimer
+(2B0U). The INSR query spans residues 28–337 and insulin also contacts a
+separate receptor αCT peptide (3W11). The mapped KDR kinase-domain construct
+(4ASD) falls outside the KDR 141–320 input. To include the real structures in
+the test suite on a fresh checkout, run
+`AB_SEARCH_LIVE_PARTNERS=1 python -m unittest discover -s tests -v` in the
+documented environment. Cached controls run offline on subsequent invocations.
+[2B0U](https://www.rcsb.org/structure/2B0U) · [3W11](https://www.rcsb.org/structure/3W11) · [4ASD](https://www.rcsb.org/structure/4ASD)
+
 ### Sources and traceability
 
 | Source | Searchable evidence | Reference preparation |

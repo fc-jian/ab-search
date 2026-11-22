@@ -24,6 +24,9 @@ from binding_search import Calibration, CANDIDATE_FIELDS, open_catalog, search_r
 from binding_sites import PROTEIN_ALPHABET
 from prepare_hil6 import RELEASE as AVIDA_RELEASE
 from prepare_patents import digest
+from protein_partners import (PartnerSearch, add_options as add_partner_options,
+                              CANDIDATE_FIELDS as PARTNER_CANDIDATE_FIELDS, EVIDENCE_FIELDS as PARTNER_EVIDENCE_FIELDS,
+                              SUMMARY_FIELDS as PARTNER_SUMMARY_FIELDS)
 
 
 BLAST_OUTFMT = (
@@ -169,8 +172,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--query", default=Path("test_input.fasta"), type=Path)
     parser.add_argument("--outdir", type=Path, default=None)
     parser.add_argument("--reference-dir", type=Path, default=Path("reference"))
-    parser.add_argument("--sources", nargs="+", choices=("sabdab", "patents", "avida"),
-                        help="Default: use all prepared sources")
+    parser.add_argument("--sources", nargs="+", choices=("sabdab", "patents", "avida", "partners"),
+                        help="Default: use prepared antibody sources. Add partners for protein and peptide binders")
+    add_partner_options(parser)
     parser.add_argument("--patent-db", type=Path, help="SQLite index built with prepare_patents.py")
     parser.add_argument("--avida-db", type=Path, help="Human IL-6 assay index built with prepare_hil6.py")
     parser.add_argument("--max-site-substitutions", type=int, default=0)
@@ -204,6 +208,12 @@ def parse_args() -> argparse.Namespace:
         parser.error("Invalid site substitution limit or identity threshold")
     if args.free_antibody_nm is not None and (not math.isfinite(args.free_antibody_nm) or args.free_antibody_nm <= 0):
         parser.error("--free-antibody-nm must be finite and positive")
+    if args.partner_pdb and any(not re.fullmatch(r"[0-9][a-z0-9]{3}", p) for p in args.partner_pdb):
+        parser.error("--partner-pdb expects four-character PDB identifiers")
+    if args.partner_max_structures is not None and args.partner_max_structures < 1:
+        parser.error("--partner-max-structures must be positive")
+    if not math.isfinite(args.atom_distance_threshold) or args.atom_distance_threshold <= 0:
+        parser.error("--atom-distance-threshold must be finite and positive")
     return args
 
 
@@ -383,7 +393,7 @@ def write_multi_query_manifest(rows: list[dict[str, str]], output_path: Path) ->
             "binding_candidates",
             "binding_evidence",
             "plabdab_references",
-        ],
+        ] + (["partner_candidates", "partner_evidence", "partner_summary"] if any("partner_evidence" in r for r in rows) else []),
     ).to_csv(output_path, sep="\t", index=False)
 
 
@@ -419,7 +429,9 @@ def main() -> None:
         use_panel = args.avida_db is not None or panel_db.is_file()
     else:
         use_sabdab, use_patents, use_panel = (s in args.sources for s in ("sabdab", "patents", "avida"))
-    if not (use_patents or use_sabdab or use_panel):
+    use_partners = args.protein_partners or bool(args.partner_sources) or "partners" in (args.sources or ())
+    use_antibodies = use_patents or use_sabdab or use_panel
+    if not (use_antibodies or use_partners):
         raise SystemExit("No prepared sources. Run python prepare_patents.py --download or prepare SAbDab references.")
     if use_patents and not patent_db.is_file():
         raise SystemExit(f"Missing patent index: {patent_db}. Build it with prepare_patents.py.")
@@ -440,6 +452,8 @@ def main() -> None:
 
     outdir.mkdir(parents=True, exist_ok=True)
     sources = [s for s, enabled in (("SAbDab", use_sabdab), ("patents", use_patents), ("AVIDa-hIL6", use_panel)) if enabled]
+    if use_partners:
+        sources.append("protein_partners")
     print(f"Searching {' + '.join(sources)}", file=sys.stderr)
     if use_sabdab:
         prepare_reference(args, sabdab_summary, pdb_seqres, sabdab_fasta, blastdb_prefix, outdir / "logs")
@@ -462,6 +476,8 @@ def main() -> None:
     score_paths: list[Path] = []
     manifest_rows: list[dict[str, str]] = []
     all_candidates = []
+    partner_search = PartnerSearch(args) if use_partners else None
+    all_partner_candidates, all_partner_evidence, all_partner_summaries = [], [], []
     with ExitStack() as resources:
         db = resources.enter_context(closing(open_catalog(patent_db))) if use_patents else None
         if db is not None:
@@ -484,10 +500,18 @@ def main() -> None:
                 score_path = run_single_query(args, record_query_path, record_outdir, sabdab_summary,
                                               pdb_seqres, blastdb_prefix, pdb_cache, force_blast=changed)
                 score_paths.append(score_path)
-            candidates = search_record(record, db, panel, score_path, record_outdir, args, calibration)
-            print(f"{record.name}: {len(candidates)} candidate antibody sequences", file=sys.stderr)
-            if multi:
-                all_candidates.extend(candidates)
+            if use_antibodies:
+                candidates = search_record(record, db, panel, score_path, record_outdir, args, calibration)
+                print(f"{record.name}: {len(candidates)} candidate antibody sequences", file=sys.stderr)
+                if multi:
+                    all_candidates.extend(candidates)
+            if partner_search:
+                candidates, evidence, summary = partner_search.run(record, record_outdir)
+                print(f"{record.name}: {len(candidates)} structure-supported protein partners", file=sys.stderr)
+                if multi:
+                    all_partner_candidates.extend(candidates)
+                    all_partner_evidence.extend(evidence)
+                    all_partner_summaries.extend(summary)
             structure_errors = 0
             if score_path:
                 with (record_outdir / "structure_score_errors.tsv").open(encoding="utf-8", newline="") as errors:
@@ -502,17 +526,31 @@ def main() -> None:
                 "structure_scores": str(score_path) if score_path else "",
                 "structure_errors": structure_errors,
                 "merged_antibodies": str(record_outdir / "merged_antibodies.csv") if score_path else "",
-                "binding_candidates": str(record_outdir / "binding_candidates.csv"),
-                "binding_evidence": str(record_outdir / "binding_evidence.csv"),
-                "plabdab_references": str(record_outdir / "plabdab_references.csv"),
+                "binding_candidates": str(record_outdir / "binding_candidates.csv") if use_antibodies else "",
+                "binding_evidence": str(record_outdir / "binding_evidence.csv") if use_antibodies else "",
+                "plabdab_references": str(record_outdir / "plabdab_references.csv") if use_antibodies else "",
             })
+            if partner_search:
+                manifest_rows[-1].update(partner_candidates=str(record_outdir / "partner_candidates.csv"),
+                                         partner_evidence=str(record_outdir / "partner_evidence.csv"),
+                                         partner_summary=str(record_outdir / "partner_summary.csv"))
     if multi:
         write_multi_query_manifest(manifest_rows, outdir / "query_manifest.tsv")
-        write_table(outdir / "binding_candidates.csv", CANDIDATE_FIELDS, all_candidates)
+        if use_antibodies:
+            write_table(outdir / "binding_candidates.csv", CANDIDATE_FIELDS, all_candidates)
+        if partner_search:
+            write_table(outdir / "partner_candidates.csv", PARTNER_CANDIDATE_FIELDS, all_partner_candidates)
+            write_table(outdir / "partner_evidence.csv", PARTNER_EVIDENCE_FIELDS, all_partner_evidence)
+            write_table(outdir / "partner_summary.csv", PARTNER_SUMMARY_FIELDS, all_partner_summaries)
         if use_sabdab:
             write_all_query_merged_summary(score_paths, outdir / "merged_antibodies.csv")
     metadata["records"] = manifest_rows
+    if partner_search:
+        metadata["protein_partners"] = partner_search.metadata()
     (outdir / "run_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    if partner_search and any(q["sources"] and all(s["status"] == "failed" for s in q["sources"].values())
+                              for q in partner_search.queries):
+        raise SystemExit("All partner sources failed for at least one resolved query. See run_metadata.json.")
     print(f"Pipeline complete: {outdir}", file=sys.stderr)
 
 
