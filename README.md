@@ -1,10 +1,131 @@
 # ab-search
 
-SAbDab-backed antigen search and antibody-antigen epitope scoring pipeline.
+Search a protein FASTA for published antibody sequences. The pipeline connects
+SAbDab structures, POISK patent records, Oxford PLAbDab paired sequences and an
+experimentally labelled human IL-6 panel. Each candidate links back to the
+records that support it.
 
-Given a query protein FASTA, the pipeline searches SAbDab antigen chains with
-BLAST, downloads matching antibody-antigen complex structures, and reports
-structure-based epitope identity plus antibody Chothia CDR annotations.
+## Quick start
+
+Python 3.10+ with NumPy, pandas and Biopython runs the patent and human IL-6
+searches. These two indexes can be built and searched on Windows or Linux.
+
+```bash
+python prepare_patents.py --download
+python prepare_hil6.py --download
+python run_pipeline.py --sources patents avida --query examples/human_controls.fasta --outdir results/human_controls
+python run_pipeline.py --sources avida --query examples/avida_hil6_wt.fasta --outdir results/il6_wt
+```
+
+To include structures, prepare the SAbDab references and tools described below.
+Running without `--sources` searches all prepared indexes. Use
+`--sources sabdab patents avida` to explicitly require all three backends.
+The main output is `binding_candidates.csv`. A multi-query file produces a
+combined candidate table with a separate row per query and antibody sequence pair.
+
+### Sources and traceability
+
+| Source | Searchable evidence | Reference preparation |
+| --- | --- | --- |
+| SAbDab + RCSB | Experimental antibody–antigen complexes and CDR contacts | Sections 1 and 2 below |
+| POISK 1.1 | Antibody chains, target sequences, patent and record IDs, assay text, coordinate evidence and audit fields | `prepare_patents.py` reads the official CSV or a local CSV.GZ. [Versioned release](https://zenodo.org/records/21775623) |
+| PLAbDab | Exact paired-chain references and potential leads from target names mentioned in a document | The same builder indexes the Oxford paired CSV.GZ. [Source and pairing methods](https://doi.org/10.1093/nar/gkad1056) |
+| AVIDa-hIL6 | Assay labels for 38,599 VHH sequences tested across 31 human IL-6 constructs | `prepare_hil6.py` verifies both files from the pinned release. The data are distributed under CC BY-NC 4.0. [Dataset](https://huggingface.co/datasets/COGNANO/AVIDa-hIL6) · [Study](https://arxiv.org/abs/2306.03329) |
+
+To index local patent exports, run
+`python prepare_patents.py --poisk path/to/poisk.csv --plabdab path/to/paired_sequences.csv.gz`.
+The builder stages a new SQLite file and replaces the old index after successful
+import. POISK 1.1 contains 93,193 records. In the verified release, 81,795 have
+a searchable antigen and at least one antibody chain. The Oxford snapshot used
+here has 176,894 paired records. Source hashes and import counts are recorded
+in the index and copied to each search's `run_metadata.json`.
+
+### Fragment and homolog evidence
+
+1. An exact antigen query can retrieve a reported patent pair or experimental complex.
+   Admission of a POISK pair requires a confirmed audit without flags, a supported
+   protein construct, and complete, unambiguous paired chains or an explicit VHH.
+   Incomplete chains, contradictory results, complex-dependent binding and
+   canonical-only target assignments remain visible in `binding_evidence.csv`.
+2. For a fragment or homolog, every residue of the verified region or structural
+   contact set must be covered by one unambiguous alignment. Individual BLAST HSPs
+   are never combined to claim coverage. The search checks literal containment
+   first. For an equal-length pair of at least eight residues with ≥90% identity,
+   a unique, ungapped optimum can retain terminal substitutions. Local
+   alignments need at least 12 aligned residue pairs and the configured overall
+   identity (default 70%, including alignment gaps in the denominator).
+3. Missing residues, unknown site letters and insertions within a mapped linear
+   region prevent transfer. The default allows zero site substitutions. For a
+   controlled relaxation, `--max-site-substitutions 1 --min-site-identity 0.90`
+   applies both thresholds. A change outside the site can leave the candidate eligible.
+   Conserved sequence alone leaves folding, accessibility and assay conditions uncertain.
+4. Cross-construct ranking currently covers source-identified human, mouse, rat,
+   chicken and bovine single-protein targets. Exact published target lookups remain
+   available for other organisms. In the structural path an unassignable contact
+   set or additional contacting protein chain prompts review.
+5. POISK structural assertions require residue letters matching the patent-listed
+   sequence and structure-determination evidence. A bare numeric range, domain
+   name or competition result cannot localize a fragment by itself. The curated
+   table anchors selected regions by unique peptide sequence and release-target
+   SHA-256. It also records construct and terminal requirements. For example, the
+   Aβ experiment refers to a processed N terminus, while the archived target
+   sequence is its APP precursor. [Curated records](data/verified_patent_sites.tsv) · [Original Aβ experiment](https://patents.google.com/patent/US7189819B2/en)
+
+The human PSCA controls exercise a real coordinate offset. The original mapping
+used a 123-residue PSCA sequence. The 114-residue reference in POISK record
+`008508` starts nine residues later. Mouse 1G8's mapped 40-residue region is
+located by its sequence. `PSCA_middle` recovers mu1G8, while `PSCA_C_terminal`
+retains only one residue of the region and produces an empty candidate table.
+The patent localizes a binding region by fragment experiments. Individual
+atomic contacts within that region remain unresolved. [Fragment mapping](https://patents.google.com/patent/US6790939B2/en) · [1G8 source patent](https://patents.google.com/patent/US8088908B2/en)
+
+### Reading the scores
+
+| Output | Interpretation |
+| --- | --- |
+| `binding_candidates.csv` | One exact chain pair per query with its source records. `evidence_grade` is ordinal, from 4 for an exact structure or positive assay, through 3 for an exact patent report, 2 for a conserved mapped site and 1 for a mapped site with permitted substitutions. |
+| `binding_evidence.csv` | Per-record decisions, coverage, substitutions, raw affinity and assay context. A review reason records why sequence evidence could not establish a candidate. |
+| `plabdab_references.csv` | `exact_chain_pair` links the published pair to a candidate. `target_mention_only` records additional pairs found by a target-name or gene-name token from an exact POISK target or SAbDab complex. Both retain the Oxford ID, pairing method and source title. Document mentions do not increase the evidence grade. |
+| `run_metadata.json` | Sources, fingerprints, thresholds and the result paths for this run. SAbDab-specific BLAST limits and per-query structure error counts are included when active. |
+
+`binding_probability` estimates the chance of a positive result for the
+specified assay endpoint. `probability_status` identifies the applicable model
+or explains a blank estimate. A missing probability is unknown.
+
+**Human IL-6 panel.** The bundled procedure estimates the AVIDa binary
+phage-display label for previously profiled VHHs and exact published constructs
+(including their tags). Five folds split entire antigen constructs by a stable
+hash. For each test fold, three other folds supply each VHH's response history,
+and one separate fold calibrates positivity by response-frequency and assay-count
+bins. The evaluated VHH is excluded from the calibration counts. Missing labels
+stay missing. An estimate requires three prior observations and 30 calibration
+measurements. The estimate is `(positive + 1) / (measured + 2)`.
+
+Validation includes positive and negative labels before positive candidates are
+selected. Of 573,891 measured pairs, 553,287 could be scored, including 15,257 of
+20,980 positives. The pooled held-out Brier score was 0.00206 against 0.02684 for
+calibration-fold prevalence on the same evaluated rows (lower is better).
+`reference/avida_validation.csv` gives counts and scores per held-out construct.
+This evaluates transfer across constructs within one experimental panel. Generalization
+to a new VHH repertoire, another target, or another assay requires separate validation.
+
+**Independent assays for another query.** Pass `--calibration-assays labels.csv`
+to estimate the positive fraction of an evidence tier for one endpoint. Columns
+are `query_sha256,antibody_key,evidence_tier,assay,study_id,bound`. Use the same
+query and chain keys as the candidate table, one protocol and positivity threshold
+per file, and independently measured 0/1 outcomes. Assign tiers using retrieval
+evidence available before the independent assay. Use the original patent or PDB
+identifier as the study ID where applicable. The estimator removes the candidate
+itself and overlapping support documents, collapses duplicate antibody labels and
+requires both outcomes across at least ten distinct antibodies and two studies.
+It uses the same add-one estimate and exposes its sample count.
+
+**Equilibrium occupancy.** With `--free-antibody-nm C`, a confirmed exact patent
+record with an explicitly labelled point Kd from a supported binding assay can
+also report `equilibrium_bound_fraction = C / (C + Kd)` under a 1:1 equilibrium
+model. Units are converted to nM. This field describes occupancy at the chosen
+concentration. IC50, bounds and affinities reported for a different construct
+leave it blank.
 
 ## 1. Environment
 

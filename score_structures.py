@@ -17,6 +17,7 @@ import pandas as pd
 from anarci import anarci
 from Bio.Align import PairwiseAligner, substitution_matrices
 from biotite.sequence import ProteinSequence
+from binding_sites import AMINO_ACIDS, HOSTS, sequence_match
 
 
 BLAST_COLUMNS = [
@@ -36,6 +37,7 @@ BLAST_COLUMNS = [
 ]
 
 MISSING_VALUES = {"", "nan", "none", "na", "n/a", "null", "-", "?"}
+BLOSUM_UNKNOWN = str.maketrans({"J": "X", "U": "X", "O": "X"})
 CHAIN_SPLIT_RE = re.compile(r"\s*\|\s*|[,;]\s*")
 ERROR_COLUMNS = ["query_id", "pdb_id", "antigen_id", "error"]
 CDR_DEFINITIONS = {
@@ -163,7 +165,7 @@ def read_fasta(path: Path) -> dict[str, str]:
     name: str | None = None
     chunks: list[str] = []
 
-    with path.open() as handle:
+    with path.open(encoding="utf-8-sig") as handle:
         for line in handle:
             line = line.strip()
             if not line:
@@ -533,7 +535,7 @@ def sequence_identity(seq_a: str, seq_b: str, aligner: PairwiseAligner) -> float
     if not seq_a or not seq_b:
         return 0.0
 
-    alignment = aligner.align(seq_a, seq_b)[0]
+    alignment = aligner.align(seq_a.translate(BLOSUM_UNKNOWN), seq_b.translate(BLOSUM_UNKNOWN))[0]
     blocks_a, blocks_b = alignment.aligned
     matches = 0
     for block_a, block_b in zip(blocks_a, blocks_b):
@@ -541,7 +543,7 @@ def sequence_identity(seq_a: str, seq_b: str, aligner: PairwiseAligner) -> float
         start_b, end_b = map(int, block_b)
         span = min(end_a - start_a, end_b - start_b)
         for offset in range(span):
-            if seq_a[start_a + offset] == seq_b[start_b + offset]:
+            if seq_a[start_a + offset] in AMINO_ACIDS and seq_a[start_a + offset] == seq_b[start_b + offset]:
                 matches += 1
 
     return matches / max(len(seq_a), len(seq_b))
@@ -691,7 +693,7 @@ def subject_to_query_mapping(
     if not query_sequence or not subject_sequence:
         return {}
 
-    alignment = aligner.align(query_sequence, subject_sequence)[0]
+    alignment = aligner.align(query_sequence.translate(BLOSUM_UNKNOWN), subject_sequence.translate(BLOSUM_UNKNOWN))[0]
     query_blocks, subject_blocks = alignment.aligned
     mapping: dict[int, int] = {}
     for query_block, subject_block in zip(query_blocks, subject_blocks):
@@ -1014,7 +1016,7 @@ def score_epitope(
 
         covered += 1
         query_aa = query_sequence[query_index]
-        if query_aa == residue.aa:
+        if query_aa in AMINO_ACIDS and query_aa == residue.aa:
             identical += 1
         else:
             mutated += 1
@@ -1086,6 +1088,9 @@ def base_output_columns() -> list[str]:
         "structure_source",
         "structure_warnings",
         "anarci_warnings",
+        "antigen_species",
+        "subject_seqres_sequence",
+        "host_contact_positions",
     ]
 
 
@@ -1230,6 +1235,8 @@ def main() -> None:
         pd.DataFrame(columns=base_output_columns()).to_csv(args.output, index=False)
         merged_output = args.merged_antibody_output or args.output.with_name("merged_antibodies.csv")
         pd.DataFrame(columns=merged_antibody_columns()).to_csv(merged_output, index=False)
+        errors_output = args.errors_output or args.output.with_suffix(".errors.tsv")
+        pd.DataFrame(columns=ERROR_COLUMNS).to_csv(errors_output, sep="\t", index=False)
         print("No BLAST hits found", file=sys.stderr)
         return
 
@@ -1244,6 +1251,7 @@ def main() -> None:
     for _, hit in hits.iterrows():
         pdb_id = clean_cell(hit.get("pdb_id")).lower()
         antigen_chain = clean_cell(hit.get("antigen_id"))
+        seqres_keys.add((pdb_id, antigen_chain))
         for sabdab_row in matching_sabdab_rows(summary, pdb_id, antigen_chain):
             for chain_id in split_chains(sabdab_row.get("Hchain")) + split_chains(sabdab_row.get("Lchain")):
                 seqres_keys.add((pdb_id, chain_id))
@@ -1380,6 +1388,18 @@ def main() -> None:
                 aligner,
             )
             structure_warnings = selected_variant.warning
+            antigen_species = clean_cell(sabdab_row.get("antigen_species"))
+            ref_record = seqres_records.get((pdb_id, antigen_chain))
+            reference = ref_record.sequence if ref_record else ""
+            contact_positions = []
+            if reference and antigen_species.casefold() in HOSTS:
+                observed = str(epitope_scores["subject_structure_sequence"])
+                placement = sequence_match(reference, observed, allow_local=True, min_identity=0.90)
+                contacts = [c.residue.seq_index for c in selected_epitope.contacts if c.chain_role == "target"]
+                if placement and not placement.ambiguous and all(
+                    i in placement.mapping and observed[i] == reference[placement.mapping[i]] for i in contacts
+                ):
+                    contact_positions = sorted({placement.mapping[i] + 1 for i in contacts})
             if selected_variant.source == "asymmetric_unit" and structure_warnings:
                 print(f"{pdb_id}:{antigen_chain}: {structure_warnings}", file=sys.stderr)
 
@@ -1395,6 +1415,9 @@ def main() -> None:
                     "evalue": hit.get("evalue"),
                     "bitscore": hit.get("bitscore"),
                     "antigen_name": sabdab_row.get("antigen_name"),
+                    "antigen_species": antigen_species,
+                    "subject_seqres_sequence": reference,
+                    "host_contact_positions": "|".join(map(str, contact_positions)),
                     "structure_source": selected_variant.source,
                     "structure_warnings": structure_warnings,
                 }

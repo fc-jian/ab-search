@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import gzip
+import shutil
 import sys
+import tempfile
 import urllib.error
 import urllib.request
+import zlib
 from pathlib import Path
 
 import pandas as pd
@@ -96,6 +100,19 @@ def unique_pdb_ids_from_hits(
     return pdb_ids
 
 
+def valid_cif_archive(path: Path) -> bool:
+    try:
+        with gzip.open(path, "rb") as handle:
+            header = next((line.strip() for line in handle if line.strip() and not line.lstrip().startswith(b"#")), b"")
+            if not header.lower().startswith(b"data_"):
+                return False
+            while handle.read(1024 * 1024):
+                pass
+        return True
+    except (OSError, EOFError, zlib.error):
+        return False
+
+
 def download_pdb_cif(
     pdb_id: str,
     cache_dir: Path,
@@ -105,20 +122,21 @@ def download_pdb_cif(
     cache_dir.mkdir(parents=True, exist_ok=True)
     pdb_id = pdb_id.lower()
     output_path = cache_dir / f"{pdb_id}.cif.gz"
-    if output_path.exists() and output_path.stat().st_size > 0:
+    if output_path.is_file() and valid_cif_archive(output_path):
         return output_path, "cached"
 
     url = url_template.format(pdb_id=pdb_id, PDB_ID=pdb_id.upper())
-    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
     request = urllib.request.Request(url, headers={"User-Agent": "ab-search/0.1"})
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            tmp_path.write_bytes(response.read())
-        tmp_path.replace(output_path)
+        with tempfile.TemporaryDirectory(dir=cache_dir) as staging:
+            tmp_path = Path(staging) / "structure.cif.gz"
+            with urllib.request.urlopen(request, timeout=timeout) as response, tmp_path.open("wb") as handle:
+                shutil.copyfileobj(response, handle)
+            if not valid_cif_archive(tmp_path):
+                raise OSError("incomplete gzip stream or invalid mmCIF header")
+            tmp_path.replace(output_path)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        if tmp_path.exists():
-            tmp_path.unlink()
         raise RuntimeError(f"failed to download {pdb_id} from {url}: {exc}") from exc
 
     return output_path, "downloaded"
@@ -163,7 +181,7 @@ def main() -> None:
             print(str(exc), file=sys.stderr)
 
     manifest = args.manifest or (args.pdb_cache / "download_manifest.tsv")
-    pd.DataFrame(rows).to_csv(manifest, sep="\t", index=False)
+    pd.DataFrame(rows, columns=["pdb_id", "path", "status", "error"]).to_csv(manifest, sep="\t", index=False)
 
     if failures:
         raise SystemExit(f"{failures} PDB downloads failed")
