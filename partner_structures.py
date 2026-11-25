@@ -331,6 +331,8 @@ def structure_rows(block, pdb_id, proteins, parent, query, match, cutoff, max_ch
         citation=f"https://www.rcsb.org/structure/{pdb_id.upper()}",
         method="|".join(sorted(methods)),
     )
+    if "struct" in block and "title" in block["struct"]:
+        base["structure_title"] = " ".join(block["struct"]["title"].as_item().split())
     if not {method.upper() for method in methods} & experimental:
         return [dict(**base, status="structure_review", reason="experimental_atomic_coordinates_unavailable")]
     if "citation" in block and "pdbx_database_id_PubMed" in block["citation"]:

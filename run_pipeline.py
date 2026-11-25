@@ -24,7 +24,7 @@ from binding_search import Calibration, CANDIDATE_FIELDS, open_catalog, search_r
 from binding_sites import PROTEIN_ALPHABET
 from prepare_hil6 import RELEASE as AVIDA_RELEASE
 from prepare_patents import digest
-from protein_partners import (PartnerSearch, add_options as add_partner_options,
+from protein_partners import (PartnerSearch, add_options as add_partner_options, write_binder_table,
                               CANDIDATE_FIELDS as PARTNER_CANDIDATE_FIELDS, EVIDENCE_FIELDS as PARTNER_EVIDENCE_FIELDS,
                               SUMMARY_FIELDS as PARTNER_SUMMARY_FIELDS)
 
@@ -393,7 +393,8 @@ def write_multi_query_manifest(rows: list[dict[str, str]], output_path: Path) ->
             "binding_candidates",
             "binding_evidence",
             "plabdab_references",
-        ] + (["partner_candidates", "partner_evidence", "partner_summary"] if any("partner_evidence" in r for r in rows) else []),
+        ] + (["partner_candidates", "partner_evidence", "partner_summary", "protein_binders"]
+             if any("partner_evidence" in r for r in rows) else []),
     ).to_csv(output_path, sep="\t", index=False)
 
 
@@ -533,13 +534,15 @@ def main() -> None:
             if partner_search:
                 manifest_rows[-1].update(partner_candidates=str(record_outdir / "partner_candidates.csv"),
                                          partner_evidence=str(record_outdir / "partner_evidence.csv"),
-                                         partner_summary=str(record_outdir / "partner_summary.csv"))
+                                         partner_summary=str(record_outdir / "partner_summary.csv"),
+                                         protein_binders=str(record_outdir / "protein_binders.csv"))
     if multi:
         write_multi_query_manifest(manifest_rows, outdir / "query_manifest.tsv")
         if use_antibodies:
             write_table(outdir / "binding_candidates.csv", CANDIDATE_FIELDS, all_candidates)
         if partner_search:
             write_table(outdir / "partner_candidates.csv", PARTNER_CANDIDATE_FIELDS, all_partner_candidates)
+            write_binder_table(outdir, all_partner_candidates)
             write_table(outdir / "partner_evidence.csv", PARTNER_EVIDENCE_FIELDS, all_partner_evidence)
             write_table(outdir / "partner_summary.csv", PARTNER_SUMMARY_FIELDS, all_partner_summaries)
         if use_sabdab:

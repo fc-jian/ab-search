@@ -63,6 +63,7 @@ PDBe provides experimental assemblies and SIFTS residue mappings. Other sources 
 | `binding_evidence.csv` | Source-level decisions, coverage, substitutions, reported affinity, conditions and review reasons. A probability is available only with applicable calibration. |
 | `plabdab_references.csv` | `exact_chain_pair` identifies a matching pair. `target_mention_only` records a document to investigate. |
 | `structure_scores.csv` and `merged_antibodies.csv` | Per-hit geometry and exact full-chain groups, with supporting PDB IDs and the observed epitope identity range. Download and scoring failures have separate manifests. |
+| `protein_binders.csv` | One fragment-supported binder per query and partner ID. `supported_forms_json` retains the deposited sequences, stoichiometry, modifications and supporting records for each form. |
 | `partner_candidates.csv`, `partner_summary.csv` and `partner_evidence.csv` | Supported partner forms, relationships at the parent-protein level, and the source records behind each decision. |
 | `run_metadata.json` | Active sources, input and reference fingerprints, search parameters and source availability. Check this file when interpreting an empty result. |
 

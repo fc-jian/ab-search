@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -59,6 +60,7 @@ EVIDENCE_FIELDS = BASE + [
     "partner_stoichiometry",
     "reference",
     "citation",
+    "structure_title",
 ]
 CANDIDATE_FIELDS = BASE + [
     "evidence_records",
@@ -71,6 +73,33 @@ CANDIDATE_FIELDS = BASE + [
     "modifications",
     "assembly_components",
     "citation",
+    "form_key",
+    "assembly_id",
+    "target_chains",
+    "query_contact_positions",
+    "site_coverage",
+    "site_identity",
+    "method",
+    "reference",
+    "structure_title",
+    "complex_context",
+    "target_modifications",
+    "sources",
+    "support_assembly_count",
+    "support_evidence_json",
+    "related_evidence_count",
+    "related_evidence_json",
+    "reported_measurements_json",
+]
+BINDER_FIELDS = [
+    "query_id", "gene", "query_uniprot", "query_range", "partner_id", "partner_name", "partner_type",
+    "partner_sequences", "sequence_basis", "partner_stoichiometry", "modifications",
+    "status", "site_size", "site_covered", "site_coverage", "site_substitutions", "site_identity",
+    "query_contact_positions", "source", "record_id", "assembly_id", "method", "reference", "citation",
+    "structure_title", "target_chains", "partner_chains", "partner_chain_sequences", "complex_context",
+    "assembly_components", "target_modifications", "form_key", "supported_form_count",
+    "support_assembly_count", "evidence_records", "sources", "related_evidence_count",
+    "reported_measurements_json", "supported_forms_json", "related_evidence_json", "query_sha256",
 ]
 SUMMARY_FIELDS = [
     "query_id",
@@ -125,39 +154,78 @@ def add_options(parser):
     )
 
 
+def structure_rank(row):
+    return (-GRADES[row["status"]], int(row["site_substitutions"]), -int(row["site_size"]),
+            row["record_id"], row["assembly_id"])
+
+
+def json_records(rows, fields):
+    # Preserve distinct observations of a single accession or assembly, including zero values.
+    return json.dumps([{k: r[k] for k in fields if r.get(k) not in (None, "")} for r in rows],
+                      ensure_ascii=False, separators=(",", ":"))
+
+
+OBSERVATION_FIELDS = [
+    "source", "record_id", "assembly_id", "status", "reason", "reference", "citation", "method",
+    "target_chains", "partner_chains", "site_size", "site_covered", "site_substitutions", "site_coverage",
+    "site_identity", "query_contact_positions", "complex_context", "assembly_components",
+    "structure_title", "query_role", "biological_role", "sequence_basis", "modifications",
+    "target_modifications", "query_feature", "partner_feature", "affinity", "kd_nM", "ki_nM", "ic50_nM",
+    "measurement_relation", "assay_parameters",
+]
+MEASUREMENT_FIELDS = [
+    "source", "record_id", "status", "reason", "query_role", "biological_role", "method", "affinity",
+    "kd_nM", "ki_nM", "ic50_nM", "measurement_relation", "assay_parameters", "reference", "citation",
+]
+
+
 def ranked(rows):
-    groups = defaultdict(list)
+    groups, related, sources = defaultdict(list), defaultdict(list), defaultdict(set)
     for r in rows:
+        if not r.get("partner_id"):
+            continue
+        pair = (r.get("query_id", ""), r["partner_id"])
+        sources[pair].add(r["source"])
         if r["status"] in GRADES and r.get("partner_sequences"):
-            groups[
-                (
-                    r["partner_id"],
-                    r["partner_sequences"],
-                    r.get("partner_stoichiometry"),
-                    r.get("modifications"),
-                )
-            ].append(r)
+            form = (r["partner_id"], r["partner_sequences"], r.get("partner_stoichiometry") or "",
+                    r.get("modifications") or "")
+            groups[pair, form].append(r)
+        else:
+            related[pair].append(r)
     result = []
-    for rs in groups.values():
-        best = min(
-            rs,
-            key=lambda r: (
-                -GRADES[r["status"]],
-                r["site_substitutions"],
-                -r["site_size"],
-                r["record_id"],
-                r["assembly_id"],
-            ),
-        )
-        result.append(
-            dict(
-                best,
-                evidence_records="|".join(
-                    sorted({f"{r['source']}:{r['record_id']}:{r['assembly_id']}" for r in rs})
-                ),
-            )
-        )
-    return sorted(result, key=lambda r: (-GRADES[r["status"]], r["partner_id"], r["partner_sequences"]))
+    pair_context = {}
+    for (pair, form), rs in groups.items():
+        if pair not in pair_context:
+            context = related[pair]
+            measured = [r for r in context if any(r.get(k) not in (None, "")
+                        for k in ("affinity", "kd_nM", "ki_nM", "ic50_nM"))]
+            pair_context[pair] = dict(sources="|".join(sorted(sources[pair])), related_evidence_count=len(context),
+                                      related_evidence_json=json_records(context, OBSERVATION_FIELDS),
+                                      reported_measurements_json=json_records(measured, MEASUREMENT_FIELDS))
+        best = min(rs, key=structure_rank)
+        records = sorted({f"{r['source']}:{r['record_id']}:{r['assembly_id']}" for r in rs})
+        key = hashlib.sha256(json.dumps(form, separators=(",", ":")).encode("utf-8")).hexdigest()
+        result.append(dict(best, **pair_context[pair], evidence_records="|".join(records),
+                           form_key=key, support_assembly_count=len(records),
+                           support_evidence_json=json_records(rs, OBSERVATION_FIELDS)))
+    return sorted(result, key=lambda r: (r.get("query_id", ""), -GRADES[r["status"]], r["partner_id"], r["partner_sequences"]))
+
+
+def write_binder_table(outdir, candidates):
+    """Write one fragment-supported binder per query and partner ID with its deposited forms."""
+    pairs = defaultdict(list)
+    for row in candidates:
+        pairs[row["query_id"], row["partner_id"]].append(row)
+    binders = []
+    form_fields = ["form_key", "partner_sequences", "partner_stoichiometry", "modifications", "status",
+                   "source", "record_id", "assembly_id", "site_size", "site_covered", "site_substitutions",
+                   "evidence_records", "reference", "citation"]
+    for forms in pairs.values():
+        forms.sort(key=lambda r: (structure_rank(r), r["form_key"]))
+        records = sorted({rec for r in forms for rec in r["evidence_records"].split("|")})
+        binders.append(dict(forms[0], supported_form_count=len(forms), support_assembly_count=len(records),
+                            evidence_records="|".join(records), supported_forms_json=json_records(forms, form_fields)))
+    write_table(outdir / "protein_binders.csv", BINDER_FIELDS, binders)
 
 
 def summarize(rows, candidates):
@@ -291,6 +359,7 @@ class PartnerSearch:
         summary = summarize(rows, candidates)
         write_table(outdir / "partner_evidence.csv", EVIDENCE_FIELDS, rows)
         write_table(outdir / "partner_candidates.csv", CANDIDATE_FIELDS, candidates)
+        write_binder_table(outdir, candidates)
         write_table(outdir / "partner_summary.csv", SUMMARY_FIELDS, summary)
         states = [s["status"] for s in report["sources"].values()]
         outcome = "unresolved" if not parent else "complete"

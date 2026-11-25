@@ -1,5 +1,6 @@
 import csv
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from binding_sites import Match
 from partner_sources import Cache, Protein, cellphonedb, gtopdb, intact, read_proteome, resolve_query, synbip
-from protein_partners import ranked
+from protein_partners import ranked, write_binder_table
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -187,6 +188,41 @@ class PartnerSources(unittest.TestCase):
             (OTHER, "Kd: 7 nM", 7, "parent_only"),
         )
 
+    def test_binder_export_preserves_forms_and_scopes_measurements_to_their_record(self):
+        structure = dict(query_id="A", partner_id="P00002", partner_name="Partner", source="PDBe",
+                         record_id="1aaa", assembly_id="1", partner_sequences=OTHER,
+                         partner_stoichiometry="1", status="site_conserved", site_size="9",
+                         site_covered="9", site_substitutions="0", reference="pubmed:1")
+        measured = dict(query_id="A", partner_id="P00002", source="GtoPdb", record_id="interactions:2",
+                        status="parent_only", reason="construct_unspecified", affinity="Kd < 7 nM",
+                        kd_nM=7, measurement_relation="<", reference="pubmed:2")
+        rows = [structure, dict(structure, assembly_id="2", site_size="12", site_covered="12"),
+                dict(structure, record_id="2bbb", partner_stoichiometry="2", status="exact_structure"),
+                dict(structure, query_id="B"), measured, dict(measured, partner_id="parent_only"),
+                dict(measured, status="reported_negative", record_id="interactions:3", affinity="", kd_nM="")]
+        candidates = ranked(rows)
+        self.assertEqual(len(candidates), 3)
+        write_binder_table(self.root, candidates)
+        binders = read_csv(self.root / "protein_binders.csv")
+        self.assertEqual([(r["query_id"], r["partner_id"]) for r in binders], [("A", "P00002"), ("B", "P00002")])
+        first, second = binders
+        self.assertEqual((first["supported_form_count"], first["support_assembly_count"], first["partner_sequences"]),
+                         ("2", "3", OTHER))
+        self.assertEqual((first["record_id"], first["partner_stoichiometry"]), ("2bbb", "2"))
+        forms = json.loads(first["supported_forms_json"])
+        self.assertEqual({f["form_key"] for f in forms}, {r["form_key"] for r in candidates if r["query_id"]=="A"})
+        self.assertEqual((forms[1]["record_id"], forms[1]["assembly_id"], forms[1]["site_size"]), ("1aaa", "2", "12"))
+        self.assertEqual(first["sources"], "GtoPdb|PDBe")
+        self.assertEqual({r["status"] for r in json.loads(first["related_evidence_json"])},
+                         {"parent_only", "reported_negative"})
+        measurement, = json.loads(first["reported_measurements_json"])
+        self.assertEqual((measurement["record_id"], measurement["status"], measurement["kd_nM"],
+                          measurement["measurement_relation"]), ("interactions:2", "parent_only", 7, "<"))
+        self.assertEqual(json.loads(second["related_evidence_json"]), [])
+        self.assertEqual(second["support_assembly_count"], "1")
+        mono = next(r for r in candidates if r["query_id"] == "A" and r["partner_stoichiometry"] == "1")
+        self.assertEqual({r["assembly_id"] for r in json.loads(mono["support_evidence_json"])}, {"1","2"})
+
     def test_public_cli_works_without_antibody_indexes_and_reports_offline_misses(self):
         q = self.root / "q.fa"
         q.write_text(f">sample/one\n{SEQ}\n>sample/two\n{OTHER}\n")
@@ -214,6 +250,11 @@ class PartnerSources(unittest.TestCase):
         self.assertEqual({r["query_id"] for r in rows}, {"sample/one", "sample/two"})
         self.assertEqual({r["status"] for r in rows}, {"parent_only"})
         self.assertTrue((out / "sample_one/partner_candidates.csv").is_file())
+        self.assertEqual(read_csv(out / "sample_one/protein_binders.csv"), [])
+        self.assertEqual(read_csv(out / "protein_binders.csv"), [])
+        with (out / "query_manifest.tsv").open(encoding="utf-8", newline="") as f:
+            self.assertEqual([Path(r["protein_binders"]).parent.name for r in csv.DictReader(f, delimiter="\t")],
+                             ["sample_one", "sample_two"])
         summary = read_csv(out / "partner_summary.csv")
         self.assertEqual({r["query_supported"] for r in summary}, {"False"})
         self.assertEqual({r["query_id"] for r in summary}, {"sample/one", "sample/two"})
