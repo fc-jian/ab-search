@@ -35,6 +35,8 @@ Omitting `--sources` selects the prepared antibody sources. Select `partners` ex
 
 Reference files and indexes are prepared on your machine under `reference/` by default. Each provider supplies its own data and usage terms.
 
+If you have local patent exports, use `python prepare_patents.py --poisk FILE --plabdab FILE` to build the index. The optional `--curations PATH` accepts verified regions with the TSV columns `record_id`, `patent_id`, `release_target_sha256`, `tested_peptide`, `mapped_region`, `free_n_terminus` and `source`. The builder checks each applied record against the source sequence and records the file digest.
+
 ### SAbDab structure scoring
 
 Place your compatible summary at `reference/sabdab_summary_all.tsv` and the SEQRES file at `reference/pdb_seqres.fasta.gz`, or pass their paths explicitly.
@@ -79,5 +81,7 @@ PDBe provides experimental assemblies and SIFTS residue mappings. Other sources 
 | `protein_binders.csv` | One fragment-supported binder per query and partner ID. `supported_forms_json` retains the deposited sequences, stoichiometry, modifications and supporting records for each form. |
 | `partner_candidates.csv`, `partner_summary.csv` and `partner_evidence.csv` | Supported partner forms, relationships at the parent-protein level, and the source records behind each decision. |
 | `run_metadata.json` | Active sources, input and reference fingerprints, search parameters and source availability. Check this file when interpreting an empty result. |
+
+With multiple FASTA records, each query has its own output directory. `query_manifest.tsv` maps record IDs to directories. The root candidate and partner tables retain query IDs. The root SAbDab `merged_antibodies.csv` groups exact full-chain pairs across all record-level structure scores.
 
 Run `python run_pipeline.py --help` for search options. For a list containing one protein sequence per line, `python find_chain_name.py --help` describes how to look up the best chain description in an existing protein BLAST database.
