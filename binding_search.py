@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from binding_sites import AMINO_ACIDS, HOSTS, assess_site, sequence_match
+from fv_qc import FV_FIELDS, FvChecker, structure_context
 from prepare_hil6 import assay_evidence
 from prepare_patents import SCHEMA_VERSION, pair_id
 
@@ -24,14 +25,14 @@ EVIDENCE_FIELDS = [
     "tier", "reason", "audit", "flags", "method", "affinity", "conditions", "citation",
     "free_antibody_nM", "equilibrium_bound_fraction",
     "binding_probability", "calibration_n", "calibration_assay", "probability_status",
-    "chain_basis", "heavy_seq_id", "light_seq_id", "full_heavy_reported", "full_light_reported",
+    "chain_basis", "heavy_seq_id", "light_seq_id", "full_heavy_reported", "full_light_reported", "antibody_format",
 ]
 CANDIDATE_FIELDS = [
     "query_id", "query_sha256", "antibody_key", "heavy", "light", "antibody_names",
     "evidence_tier", "evidence_grade", "sources", "source_documents", "evidence_records",
     "best_evidence_record", "chain_basis", "site_type", "site_coverage", "site_substitutions", "site_identity",
     "binding_probability", "calibration_n", "calibration_assay", "probability_status",
-]
+] + FV_FIELDS
 PUBLICATION_FIELDS = ["query_id", "relationship", "ID", "heavy_sequence", "light_sequence",
                       "pairing", "reference_title", "targets_mentioned"]
 NEGATIVE = re.compile(r"\b(no (?:detectable |measurable )?(?:binding|interaction)|non[- ]?bind\w*|"
@@ -54,7 +55,8 @@ def open_catalog(path: Path) -> sqlite3.Connection:
 
 def classify_patent(data, query, reference, match, max_substitutions, min_site_identity):
     common = {k: data[k] for k in EVIDENCE_FIELDS if k in data}
-    common.update(source="POISK", match=match.kind, alignment_identity=match.identity, tier="review")
+    common.update(source="POISK", match=match.kind, alignment_identity=match.identity, tier="review",
+                  antibody_format=data["format"])
     if not common["citation"]:
         common["citation"] = f"https://patents.google.com/patent/US{data['document_id']}"
     if data["audit"] != "CONFIRMED" or data["flags"]:
@@ -144,7 +146,7 @@ def structure_evidence(path: Path, query: str, min_identity, max_substitutions, 
                        target=r["antigen_name"], organism=r.get("antigen_species", ""),
                        origin="PDB_SEQRES", site_type="CDR_contacts", tier="review",
                        chain_basis=chain_basis, heavy_seq_id=r["heavy_chain_id"], light_seq_id=r["light_chain_id"],
-                       citation=f"https://www.rcsb.org/structure/{r['pdb_id']}")
+                       citation=f"https://www.rcsb.org/structure/{r['pdb_id']}", **structure_context(r))
             rows.append(row)
             vhh = re.search(r"\b(VHH|nanobody|single[- ]domain)\b", r.get("heavy_chain_description", ""), re.I)
             if not heavy or not (light or vhh) or not set(heavy + light) <= AMINO_ACIDS:
@@ -279,7 +281,7 @@ def write_table(path, fields, rows):
         staging.replace(path)
 
 
-def search_record(record, db, panel, scores, outdir, args, calibration):
+def search_record(record, db, panel, scores, outdir, args, calibration, fv_checker=None):
     query, name = record.sequence, record.name
     min_identity = args.min_identity / 100 if args.min_identity > 1 else args.min_identity
     rows, aliases = [], set()
@@ -295,6 +297,7 @@ def search_record(record, db, panel, scores, outdir, args, calibration):
     for row in rows:
         row["query_id"] = name
     candidates = rank_candidates(rows, name, query, calibration)
+    (fv_checker or FvChecker()).annotate(candidates, rows)
     refs = publications(db, candidates, aliases, name) if db is not None else []
     write_table(outdir / "binding_evidence.csv", EVIDENCE_FIELDS, rows)
     write_table(outdir / "binding_candidates.csv", CANDIDATE_FIELDS, candidates)

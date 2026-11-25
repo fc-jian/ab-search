@@ -130,7 +130,7 @@ def assay_evidence(db, query, other_rows):
         rows.append(dict(source="AVIDa-hIL6", record_id=f"{antigen[1]}:{antibody_id}", document_id="AVIDa-hIL6",
                          antibody="", heavy=heavy, light="", target=antigen[1], organism="Homo sapiens",
                          match="exact", alignment_identity=1, method=ASSAY, origin="assay_construct",
-                         chain_basis="assayed_VHH_construct",
+                         chain_basis="assayed_VHH_construct", antibody_format="VHH",
                          tier="exact_assay" if bound else "review", reason="" if bound else "observed_negative",
                          binding_probability=prob, calibration_n=count, calibration_assay=ASSAY,
                          probability_status="panel_calibrated" if prob is not None else "insufficient_profile",

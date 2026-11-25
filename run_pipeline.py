@@ -20,6 +20,7 @@ from pathlib import Path
 import pandas as pd
 
 from filter_seqs import filter_fasta
+from fv_qc import FvChecker
 from binding_search import Calibration, CANDIDATE_FIELDS, open_catalog, search_record, write_table
 from binding_sites import PROTEIN_ALPHABET
 from prepare_hil6 import RELEASE as AVIDA_RELEASE
@@ -177,6 +178,10 @@ def parse_args() -> argparse.Namespace:
     add_partner_options(parser)
     parser.add_argument("--patent-db", type=Path, help="SQLite index built with prepare_patents.py")
     parser.add_argument("--avida-db", type=Path, help="Human IL-6 assay index built with prepare_hil6.py")
+    parser.add_argument("--fv-references", type=Path,
+                        help="Verified, record- and raw-pair-specific Fv sequence references (TSV)")
+    parser.add_argument("--fv-offline", action="store_true",
+                        help="Check patent Fv sequences using cached NCBI records only")
     parser.add_argument("--max-site-substitutions", type=int, default=0)
     parser.add_argument("--min-site-identity", type=float, default=0.90)
     parser.add_argument("--calibration-assays", type=Path, help="Independent target- and assay-matched binding labels")
@@ -477,6 +482,10 @@ def main() -> None:
     score_paths: list[Path] = []
     manifest_rows: list[dict[str, str]] = []
     all_candidates = []
+    fv_checker = FvChecker(args.fv_references, args.threads, reference_dir / "fv_patents", args.fv_offline) if use_antibodies else None
+    if fv_checker:
+        metadata["fv_qc"] = {"scheme": "imgt", "references_sha256": digest(fv_checker.reference_path) if fv_checker.reference_path else "",
+                             "engine_warning": fv_checker.engine_error, "offline": args.fv_offline}
     partner_search = PartnerSearch(args) if use_partners else None
     all_partner_candidates, all_partner_evidence, all_partner_summaries = [], [], []
     with ExitStack() as resources:
@@ -502,8 +511,12 @@ def main() -> None:
                                               pdb_seqres, blastdb_prefix, pdb_cache, force_blast=changed)
                 score_paths.append(score_path)
             if use_antibodies:
-                candidates = search_record(record, db, panel, score_path, record_outdir, args, calibration)
+                candidates = search_record(record, db, panel, score_path, record_outdir, args, calibration, fv_checker)
                 print(f"{record.name}: {len(candidates)} candidate antibody sequences", file=sys.stderr)
+                fv_counts = Counter(c["fv_status"] for c in candidates)
+                if fv_counts["warning"]:
+                    print(f"{record.name}: {fv_counts['warning']} antibody Fv sequences require review "
+                          "(see fv_warnings in binding_candidates.csv)", file=sys.stderr)
                 if multi:
                     all_candidates.extend(candidates)
             if partner_search:
@@ -536,6 +549,8 @@ def main() -> None:
                                          partner_evidence=str(record_outdir / "partner_evidence.csv"),
                                          partner_summary=str(record_outdir / "partner_summary.csv"),
                                          protein_binders=str(record_outdir / "protein_binders.csv"))
+            if use_antibodies:
+                manifest_rows[-1]["fv_counts"] = dict(fv_counts)
     if multi:
         write_multi_query_manifest(manifest_rows, outdir / "query_manifest.tsv")
         if use_antibodies:
@@ -548,6 +563,8 @@ def main() -> None:
         if use_sabdab:
             write_all_query_merged_summary(score_paths, outdir / "merged_antibodies.csv")
     metadata["records"] = manifest_rows
+    if fv_checker:
+        metadata["fv_qc"]["ncbi_snapshots"] = fv_checker.patents.used
     if partner_search:
         metadata["protein_partners"] = partner_search.metadata()
     (outdir / "run_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")

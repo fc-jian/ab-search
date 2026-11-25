@@ -47,6 +47,19 @@ The reader expects legacy columns such as `pdb`, `Hchain`, `Lchain` and `antigen
 
 The scorer numbers antibody domains from SEQRES when available, maps the CDRs to observed residues and uses the first biological assembly. If that assembly is unavailable or yields no matching CDR contacts, it tries the asymmetric unit and records the reason in `structure_warnings`. A contact meets either the Cα threshold (8 Å) or the minimum heavy-atom threshold (4.5 Å). The scorer defines Chothia and IMGT CDR ranges. Chothia is the default.
 
+### Antibody Fv quality
+
+The candidate table preserves the source `heavy` and `light` sequences. The `fv_*` columns describe the variable domains using IMGT, independently of the structure-scoring scheme. ANARCI and HMMER provide the numbering. A missing engine produces a warning on the affected candidate.
+
+| `fv_status` | Interpretation |
+| --- | --- |
+| `pass` | Each expected chain spans a complete numbered domain. A documented single-domain antibody can have an empty light chain. |
+| `trimmed` | A complete domain was extracted from the supplied construct. The input spans identify the removed flanks. |
+| `recovered` | A recorded source supports a complete sequence. Check the per-chain status for a recovery from the same record or an independently documented clone. |
+| `warning` | A chain or its provenance needs review. Consult `fv_warnings` and the per-chain fields before using the reported sequence. |
+
+Use `--fv-offline` to restrict patent sequence lookups to the local cache. To supply additional verified references, pass `--fv-references PATH`. Its TSV header is `record_id, raw_pair_sha256, chain, sequence, relationship, reference, citation` (tab-separated). The relationship is `same_record` or `same_clone`. The raw pair key binds a reference to the original chain pair. The input table is optional.
+
 ### Human protein and peptide partners
 
 ```bash
