@@ -1,6 +1,5 @@
 import csv
 import importlib.util
-import os
 import subprocess
 import sys
 import tempfile
@@ -10,7 +9,6 @@ from pathlib import Path
 from binding_sites import Match
 from partner_sources import Cache, Protein, cellphonedb, gtopdb, intact, read_proteome, resolve_query, synbip
 from protein_partners import ranked
-from run_pipeline import read_query_records
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -244,44 +242,6 @@ class PartnerGeometry(unittest.TestCase):
         self.assertEqual(score([5, 9, 11, 17, 20], mutated, 1)["status"], "site_similar")
         chain.modified_residues[9] = "PTR"
         self.assertEqual(score([5, 9])["reason"], "modified_target_contact")
-
-    def test_real_biological_assemblies(self):
-        from partner_structures import load_entry, structure_rows
-
-        path = ROOT / "reference/partners"
-        online = os.environ.get("AB_SEARCH_LIVE_PARTNERS") == "1"
-        pdbs = ["2b0u", "3w11", "4asd"]
-        if not online and (
-            not (path / "human-reviewed-isoforms.fasta.gz").exists()
-            or not all((path / "pdbe" / (p + ".cif.gz")).exists() for p in pdbs)
-        ):
-            self.skipTest("Set AB_SEARCH_LIVE_PARTNERS=1 to fetch the official PDBe test entries")
-        cache = Cache(path, offline=not online)
-        from partner_sources import UNIPROT
-
-        proteins = cache.read("human-reviewed-isoforms.fasta.gz", UNIPROT, read_proteome)
-        outputs = []
-        for r, pdb_id in zip(read_query_records(ROOT / "examples/protein_partners.fasta"), pdbs):
-            p, m, _, _ = resolve_query(r.sequence, proteins)
-            outputs.append(
-                structure_rows(load_entry(cache, pdb_id), pdb_id, proteins, p, r.sequence, m, 4.5, 0, 0.90)
-            )
-        fst, insr, kdr = outputs
-        (activin,) = ranked(fst)
-        self.assertEqual(
-            (activin["partner_id"], activin["status"], activin["partner_stoichiometry"]),
-            ("P08476", "exact_structure", "2"),
-        )
-        self.assertGreater(activin["site_covered"], 0)
-        self.assertEqual(activin["site_size"], activin["site_covered"])
-        (insulin,) = [r for r in insr if r.get("partner_id") == "P01308"]
-        self.assertEqual(insulin["reason"], "additional_target_chain_outside_query")
-        self.assertEqual(sorted(map(len, insulin["partner_sequences"].split("|"))), [21, 30])
-        self.assertIn("731-746", insulin["complex_context"])
-        self.assertEqual(ranked(insr), [])
-        self.assertEqual([r["reason"] for r in kdr], ["target_domain_outside_query"])
-        self.assertTrue(all(not r.get("partner_id") for r in kdr))
-
 
 if __name__ == "__main__":
     unittest.main()

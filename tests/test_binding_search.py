@@ -23,9 +23,9 @@ from run_pipeline import read_query_records, run_single_query
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REF = "MKWVTFISLLFLFSSAYSRGVFRRDTHKSEIAHRFKDLGE"
-HEAVY = "QVQLVESGGGLVQPGGSLRLSCAAS" * 4
-LIGHT = "DIQMTQSPSSLSASVGDRVTITC" * 4
+REF = "ACDEFGHIKLMNPQRSTVWY" + "VYSQMEPFDGIWCKNTLRHA"
+HEAVY = "ACDFHIKLMN" * 8
+LIGHT = "STVYEGQPRA" * 8
 
 
 def source_row():
@@ -114,10 +114,10 @@ class SiteEvidence(unittest.TestCase):
             self.assertIsNone(bound_fraction(text, method, 1))
 
     def test_verified_peptide_requires_the_correct_terminus(self):
-        seq = "DAEFRHDSGY"
+        seq = REF[2:12]
         row = source_row() | {"target.sequence": "MKW" + seq + "RK", "target.sequence_from_patent": "MKW" + seq + "RK"}
         verified = dict(patent_id=row["patent_id"], release_target_sha256=hashlib.sha256(row["target.sequence"].encode()).hexdigest(),
-                        tested_peptide=seq, mapped_region="DAEFR", free_n_terminus="yes", source="test citation")
+                        tested_peptide=seq, mapped_region=seq[:5], free_n_terminus="yes", source="test citation")
         ref, data = patent_record(row, verified)
         self.assertEqual(ref, seq)
         for q, expected in [(seq, "exact_report"), (seq + "WW", "site_conserved"), ("MKW" + seq, "requires_free_n_terminus")]:
@@ -216,6 +216,14 @@ class CatalogAndCLI(unittest.TestCase):
             build_catalog(self.poisk, None, self.db)
         self.assertEqual(self.db.read_bytes(), old)
 
+    def test_curation_file_is_optional_and_explicit_paths_are_checked(self):
+        missing = self.work / "missing.tsv"
+        with patch("prepare_patents.CURATIONS", missing):
+            metadata = build_catalog(self.poisk, None, self.db)
+        self.assertEqual(metadata["curations_sha256"], "")
+        with self.assertRaises(FileNotFoundError):
+            build_catalog(self.poisk, None, self.db, curations=missing)
+
     def test_input_does_not_join_internal_stops(self):
         fasta = self.work / "q.fa"
         fasta.write_text(">q\nACD*EF\n")
@@ -274,18 +282,34 @@ class CalibratedProbabilities(unittest.TestCase):
         profile[0, :] = -1
         self.assertTrue(np.isnan(panel_predictions(profile, fit)[0][0]))
 
+@unittest.skipUnless(importlib.util.find_spec("biotite") and importlib.util.find_spec("anarci"),
+                     "requires structural analysis dependencies")
+class StructuralCoordinates(unittest.TestCase):
+    def test_compressed_coordinates_preserve_author_insertion_codes(self):
+        from biotite.structure import AtomArray
+        from biotite.structure.io import pdbx
+        from score_structures import chain_residues, load_structure_variants, min_distance
 
-@unittest.skipUnless((ROOT / "reference/pdb_files/3kr3.cif.gz").exists() and
-                     importlib.util.find_spec("biotite") and importlib.util.find_spec("anarci"),
-                     "requires the SAbDab environment and cached IGF-II complex")
-class HumanStructure(unittest.TestCase):
-    def test_real_complex_geometry(self):
-        from score_structures import chain_ids_in_structure, chain_residues, load_structure_variants, min_distance
-        atoms = load_structure_variants(ROOT / "reference/pdb_files/3kr3.cif.gz")[0].atoms
-        residues = chain_residues(atoms, chain_ids_in_structure(atoms)[0])
-        self.assertGreater(len(residues), 2)
-        distance = min_distance(residues[0].atoms.coord, residues[1].atoms.coord)
-        self.assertTrue(np.isfinite(distance) and distance > 0)
+        atoms = AtomArray(2)
+        atoms.chain_id[:] = "A"
+        atoms.res_id[:] = 42
+        atoms.ins_code[:] = ["", "A"]
+        atoms.res_name[:] = ["ALA", "GLY"]
+        atoms.atom_name[:] = "CA"
+        atoms.element[:] = "C"
+        atoms.coord = np.array([[0., 0., 0.], [3., 0., 0.]])
+        cif = pdbx.CIFFile()
+        pdbx.set_structure(cif, atoms)
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "structure.cif.gz"
+            with gzip.open(path, "wt") as handle:
+                cif.write(handle)
+            variant, = load_structure_variants(path)
+        self.assertEqual(variant.source, "asymmetric_unit")
+        self.assertTrue(variant.warning)
+        residues = chain_residues(variant.atoms, "A")
+        self.assertEqual([(r.res_id, r.ins_code) for r in residues], [(42, ""), (42, "A")])
+        self.assertEqual(min_distance(residues[0].atoms.coord, residues[1].atoms.coord), 3.)
 
 
 if __name__ == "__main__":

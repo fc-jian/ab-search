@@ -1,4 +1,0 @@
-record_id	patent_id	release_target_sha256	tested_peptide	mapped_region	free_n_terminus	source
-001294	6790939	6fdce8c2b737e589112f38e25ed94eda625aae8419e9e2864f38cc6b6949adb4		LLCYSCKAQVSNEDCLQVENCTQLGEQCWT	no	https://patents.google.com/patent/US6790939B2/en#description (Fig. 15, fragment immunoblot)
-008508	8088908	252effdba5d5a0e6749f95b5f0e761612b28f277185eb31177aa6f841a145759		EQCWTARIRAVGLLTVISKGCSLNCVDDSQDYYVGKKNIT	no	https://patents.google.com/patent/US8088908B2/en#description (mouse 1G8); https://patents.google.com/patent/US6790939B2/en#description (Fig. 15, SEQ ID NO 2)
-001998	7189819	0f79dd8c1ea278edbe797ca3ccb235de12e8d482492499a37a977a0692d3e49b	DAEFRHDSGY	DAEFR	yes	https://patents.google.com/patent/US7189819B2/en#description (Table 17, SEQ ID NO 33 and N-terminal specificity)

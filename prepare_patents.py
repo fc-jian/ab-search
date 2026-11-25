@@ -171,10 +171,14 @@ def patent_record(row: dict, verified: dict | None) -> tuple[str, dict]:
     }
 
 
-def build_catalog(poisk: Path, plabdab: Path | None, output: Path, curations: Path = CURATIONS) -> dict:
+def build_catalog(poisk: Path, plabdab: Path | None, output: Path, curations: Path | None = None) -> dict:
     output.parent.mkdir(parents=True, exist_ok=True)
-    with curations.open(encoding="utf-8", newline="") as handle:
-        verified = {row["record_id"]: row for row in csv.DictReader(handle, delimiter="\t")}
+    if curations is None and CURATIONS.is_file():
+        curations = CURATIONS
+    verified = {}
+    if curations is not None:
+        with curations.open(encoding="utf-8", newline="") as handle:
+            verified = {row["record_id"]: row for row in csv.DictReader(handle, delimiter="\t")}
     fd, name = tempfile.mkstemp(dir=output.parent, suffix=".sqlite.tmp")
     os.close(fd)
     staging = Path(name)
@@ -236,7 +240,7 @@ def build_catalog(poisk: Path, plabdab: Path | None, output: Path, curations: Pa
             counts["distinct_reference_sequences"] = len(targets)
             metadata = {"schema": SCHEMA_VERSION, "counts": dict(counts), "poisk_sha256": digest(poisk),
                         "plabdab_sha256": digest(plabdab) if plabdab else "",
-                        "curations_sha256": digest(curations), "poisk_release": "1.1-compatible",
+                        "curations_sha256": digest(curations) if curations else "", "poisk_release": "1.1-compatible",
                         "poisk_url": POISK_URL, "plabdab_url": PLABDAB_URL if plabdab else ""}
             if digest(poisk, "md5") == POISK_MD5:
                 metadata["poisk_release"] = "1.1"
@@ -254,6 +258,7 @@ def main() -> None:
     parser.add_argument("--download", action="store_true", help="Fetch the official POISK and PLAbDab tables")
     parser.add_argument("--poisk", type=Path, help="POISK 1.1 schema CSV or CSV.GZ")
     parser.add_argument("--plabdab", type=Path, help="Oxford paired-sequences CSV or CSV.GZ")
+    parser.add_argument("--curations", type=Path, help="Optional TSV of independently verified patent regions")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     poisk = args.poisk or args.reference_dir / "poisk_v1.1.csv"
@@ -264,7 +269,7 @@ def main() -> None:
         download(PLABDAB_URL, plabdab)
     if not args.plabdab and not plabdab.exists():
         plabdab = None
-    metadata = build_catalog(poisk, plabdab, output)
+    metadata = build_catalog(poisk, plabdab, output, curations=args.curations)
     print(json.dumps(metadata, indent=2), file=sys.stderr)
 
 

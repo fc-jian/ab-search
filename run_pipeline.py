@@ -169,7 +169,7 @@ def write_query_record(record: QueryRecord, path: Path) -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Find published antibody sequences for a protein FASTA.")
-    parser.add_argument("--query", default=Path("test_input.fasta"), type=Path)
+    parser.add_argument("--query", required=True, type=Path, help="Protein FASTA with one or more records")
     parser.add_argument("--outdir", type=Path, default=None)
     parser.add_argument("--reference-dir", type=Path, default=Path("reference"))
     parser.add_argument("--sources", nargs="+", choices=("sabdab", "patents", "avida", "partners"),
